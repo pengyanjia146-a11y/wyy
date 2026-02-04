@@ -4,7 +4,7 @@ import { Player } from './components/Player';
 import { LoginModal } from './components/LoginModal';
 import { Toast, ToastType } from './components/Toast';
 import { HomeIcon, SearchIcon, LibraryIcon, NeteaseIcon, YouTubeIcon, BilibiliIcon, PlayIcon, LabIcon, PlaylistAddIcon, PluginFileIcon, MoreVerticalIcon, HeartIcon, DownloadIcon, NextPlanIcon, SettingsIcon, FolderIcon, ActivityIcon, TrashIcon, UserCheckIcon, UserPlusIcon, SmartphoneIcon } from './components/Icons';
-import { Song, UserProfile, ViewState, MusicSource, Playlist, MusicPlugin, AudioQuality, Artist } from './types';
+import { Song, UserProfile, ViewState, MusicSource, Playlist, MusicPlugin, AudioQuality, Artist, DiagnosticResult } from './types';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('HOME');
@@ -67,9 +67,10 @@ export default function App() {
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const [pluginLoading, setPluginLoading] = useState(false);
   
-  // Latency State
-  const [pings, setPings] = useState({ netease: -1, youtube: -1 });
-  const [pinging, setPinging] = useState(false);
+  // Diagnostics State
+  const [diagnosticResults, setDiagnosticResults] = useState<DiagnosticResult[]>([]);
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // Settings State (Persistence)
   const [settings, setSettings] = useState(() => {
@@ -105,6 +106,17 @@ export default function App() {
 
   // Active Context Menu
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  
+  // Polling for logs when in Labs view
+  useEffect(() => {
+      let interval: any;
+      if (view === 'LABS') {
+          interval = setInterval(() => {
+              setDebugLogs([...musicService.getLogs()]);
+          }, 1000);
+      }
+      return () => clearInterval(interval);
+  }, [view]);
 
   const showToast = (msg: string, type: ToastType = 'info') => {
       setToast({ msg, type, show: true });
@@ -119,7 +131,6 @@ export default function App() {
         fetchUserResources(u);
       } catch (e) {}
     }
-    checkLatency();
   }, []);
 
   const fetchUserResources = async (u: UserProfile) => {
@@ -137,11 +148,12 @@ export default function App() {
     return () => window.removeEventListener('click', handleClick);
   }, []);
 
-  const checkLatency = async () => {
-      setPinging(true);
-      const res = await musicService.getPings();
-      setPings(res);
-      setPinging(false);
+  const runDiagnostics = async () => {
+      setIsRunningDiagnostics(true);
+      musicService.clearLogs();
+      const results = await musicService.runDiagnostics();
+      setDiagnosticResults(results);
+      setIsRunningDiagnostics(false);
   };
 
   const handleLoginSuccess = async (loggedInUser: UserProfile) => {
@@ -508,7 +520,6 @@ export default function App() {
   const handleSaveCustomUrl = () => {
       setSettings(s => ({ ...s, customInvidious: settings.customInvidious }));
       showToast('设置已保存', 'success');
-      checkLatency();
   };
 
   const songItemProps = (song: Song) => ({
@@ -529,6 +540,15 @@ export default function App() {
       if (ms < 200) return 'text-green-500';
       if (ms < 500) return 'text-yellow-500';
       return 'text-red-400';
+  };
+  
+  const getStatusColor = (status: string) => {
+      switch(status) {
+          case 'ok': return 'text-green-400';
+          case 'error': return 'text-red-400';
+          case 'pending': return 'text-yellow-400';
+          default: return 'text-gray-400';
+      }
   };
 
   const renderHome = () => (
@@ -700,46 +720,6 @@ export default function App() {
                   </div>
               </div>
           )}
-          
-          {/* Text Import Modal */}
-          {showImport && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-                  <div className="bg-dark-light rounded-xl p-6 w-full max-w-md border border-white/10">
-                      <h3 className="font-bold text-lg mb-2">批量搜歌导入</h3>
-                      <textarea 
-                          value={importText}
-                          onChange={e => setImportText(e.target.value)}
-                          className="w-full h-40 bg-black/30 rounded-lg p-3 text-sm focus:outline-none mb-4"
-                          placeholder="在此粘贴歌曲列表..."
-                      />
-                      <div className="flex justify-end gap-2">
-                          <button onClick={() => setShowImport(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
-                          <button onClick={handleTextImport} className="px-4 py-2 bg-primary rounded-lg text-sm text-white">开始导入</button>
-                      </div>
-                  </div>
-              </div>
-          )}
-
-          {/* Netease Link Import Modal */}
-          {showNeteaseImport && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-                  <div className="bg-dark-light rounded-xl p-6 w-full max-w-md border border-white/10">
-                      <h3 className="font-bold text-lg mb-2">导入网易云歌单</h3>
-                      <p className="text-xs text-gray-400 mb-4">请粘贴歌单链接 (包含 id=xxxxx)</p>
-                      <input 
-                          type="text"
-                          value={neteaseLink}
-                          onChange={e => setNeteaseLink(e.target.value)}
-                          className="w-full bg-black/30 rounded-lg p-3 text-sm focus:outline-none mb-4 border border-white/10"
-                          placeholder="https://music.163.com/playlist?id=..."
-                      />
-                      <div className="flex justify-end gap-2">
-                          <button onClick={() => setShowNeteaseImport(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
-                          <button onClick={handleNeteaseImport} className="px-4 py-2 bg-netease rounded-lg text-sm text-white">开始解析</button>
-                      </div>
-                  </div>
-              </div>
-          )}
       </div>
   );
   
@@ -869,27 +849,36 @@ export default function App() {
       <div className="pb-24 animate-fade-in">
           <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><LabIcon className="text-primary" size={28} /> 实验室</h2>
           
+          {/* New Diagnostic Tool */}
           <div className="bg-dark-light p-6 rounded-xl border border-white/5 mb-6">
-               <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-lg flex items-center gap-2"><ActivityIcon className="text-blue-400" /> 网络延迟</h3>
-                  <button onClick={checkLatency} disabled={pinging} className="text-xs bg-white/10 px-3 py-1 rounded hover:bg-white/20 transition-colors">
-                      {pinging ? '检测中...' : '刷新'}
+              <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-lg flex items-center gap-2"><ActivityIcon className="text-blue-400" /> 网络链路诊断</h3>
+                  <button onClick={runDiagnostics} disabled={isRunningDiagnostics} className="bg-primary hover:bg-indigo-600 px-4 py-2 rounded-lg text-xs font-bold transition-colors disabled:opacity-50">
+                      {isRunningDiagnostics ? '检测中...' : '开始全面检测'}
                   </button>
-               </div>
-               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                   <div className="bg-black/20 p-4 rounded-lg flex flex-col items-center">
-                       <span className="text-xs text-gray-400 mb-1">网易云</span>
-                       <span className={`font-mono font-bold ${getLatencyColor(pings.netease)}`}>
-                           {pings.netease === -1 ? 'Timeout' : `${pings.netease}ms`}
-                       </span>
-                   </div>
-                   <div className="bg-black/20 p-4 rounded-lg flex flex-col items-center">
-                       <span className="text-xs text-gray-400 mb-1">YouTube</span>
-                       <span className={`font-mono font-bold ${getLatencyColor(pings.youtube)}`}>
-                           {pings.youtube === -1 ? 'Timeout' : `${pings.youtube}ms`}
-                       </span>
-                   </div>
-               </div>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">测试所有音乐源的连通性。如果 YouTube 搜索失败，请查看下方结果。</p>
+              
+              {diagnosticResults.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2 mb-4">
+                      {diagnosticResults.map((res, i) => (
+                          <div key={i} className="flex justify-between items-center bg-black/20 p-3 rounded border border-white/5">
+                              <span className="text-sm">{res.name}</span>
+                              <div className="text-right">
+                                  <div className={`text-sm font-mono font-bold ${getStatusColor(res.status)}`}>{res.message}</div>
+                                  <div className="text-[10px] text-gray-500">{res.latency}ms</div>
+                              </div>
+                          </div>
+                      ))}
+                  </div>
+              )}
+              
+              <div className="bg-black/40 rounded-lg p-3 h-40 overflow-y-auto font-mono text-[10px] text-green-400 custom-scrollbar border border-white/5">
+                  <div className="text-gray-500 mb-1 sticky top-0 bg-black/90 p-1 border-b border-white/10">运行日志 (实时更新)</div>
+                  {debugLogs.length === 0 ? <span className="text-gray-600">等待操作...</span> : debugLogs.map((log, i) => (
+                      <div key={i} className="whitespace-pre-wrap">{log}</div>
+                  ))}
+              </div>
           </div>
 
           <div className="bg-dark-light p-6 rounded-xl border border-white/5 mb-6">
@@ -970,13 +959,13 @@ export default function App() {
                           <label className="block text-xs text-gray-400 mb-2">搜索超时时间 (秒)</label>
                           <input 
                               type="number" 
-                              min="5"
+                              min="3"
                               max="60"
                               value={settings.searchTimeout} 
                               onChange={(e) => setSettings(s => ({ ...s, searchTimeout: parseInt(e.target.value) || 15 }))}
                               className="bg-black/30 w-full p-3 rounded-lg border border-white/10 text-sm text-gray-300 focus:outline-none focus:border-blue-500"
                           />
-                          <p className="text-[10px] text-gray-500 mt-2">如果搜索 B站/YouTube 经常失败，请尝试调大此数值 (默认 15秒)。</p>
+                          <p className="text-[10px] text-gray-500 mt-2">如果搜索 B站/YouTube 经常失败，请尝试调大此数值。</p>
                       </div>
                   </div>
               </div>

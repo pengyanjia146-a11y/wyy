@@ -59,6 +59,13 @@ export interface MusicPlugin {
     srcUrl?: string; // Where it was loaded from
 }
 
+export interface DiagnosticResult {
+    name: string;
+    status: 'pending' | 'ok' | 'error' | 'skipped';
+    latency: number;
+    message: string;
+}
+
 export type ViewState = 'HOME' | 'SEARCH' | 'LIBRARY' | 'LABS' | 'SETTINGS' | 'ARTIST_DETAIL';
 
 export type AudioQuality = 'standard' | 'exhigh' | 'lossless';
