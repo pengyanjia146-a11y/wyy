@@ -105,7 +105,7 @@ export default function App() {
   const [neteaseLink, setNeteaseLink] = useState('');
 
   // Active Context Menu
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuSong, setMenuSong] = useState<Song | null>(null);
   
   // Polling for logs when in Labs view
   useEffect(() => {
@@ -143,7 +143,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const handleClick = () => setOpenMenuId(null);
+    const handleClick = () => setMenuSong(null);
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, []);
@@ -347,20 +347,32 @@ export default function App() {
 
   const isFollowed = (artistId: string) => followedArtists.some(a => a.id === artistId);
 
+  // Progressive Search Handler
   const handleSearch = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!searchQuery.trim()) return;
       
-      // Save History
       if(!searchHistory.includes(searchQuery)) {
           setSearchHistory(prev => [searchQuery, ...prev].slice(0, 10));
       }
 
       setSearchLoading(true);
-      const results = await musicService.searchMusic(searchQuery);
-      setSearchResults(results);
+      setSearchResults([]); // Clear old results
+      
+      // Use the new streaming method
+      await musicService.searchMusic(searchQuery, (newSongs) => {
+          setSearchResults(prev => {
+              // Simple deduplication based on ID
+              const existingIds = new Set(prev.map(s => s.id));
+              const uniqueNewSongs = newSongs.filter(s => !existingIds.has(s.id));
+              return [...prev, ...uniqueNewSongs];
+          });
+      });
+      
       setSearchLoading(false);
   };
+
+  // ... (Imports logic unchanged) ...
 
   // Playlist Import: Text
   const handleTextImport = async () => {
@@ -376,15 +388,18 @@ export default function App() {
       let successCount = 0;
       let newSongs = [...targetPlaylist.songs];
 
+      // Note: Text import still uses legacy waiting logic for simplicity, or we could upgrade it too
+      // For now, keeping it simple as it processes line by line
       for (const line of lines) {
-          const results = await musicService.searchMusic(line.trim());
-          if (results.length > 0) {
-              const bestMatch = results[0];
-              if (!newSongs.some(s => s.id === bestMatch.id)) {
-                  newSongs.unshift(bestMatch);
-                  successCount++;
-              }
-          }
+          await musicService.searchMusic(line.trim(), (results) => {
+               if (results.length > 0) {
+                  const bestMatch = results[0];
+                  if (!newSongs.some(s => s.id === bestMatch.id)) {
+                      newSongs.unshift(bestMatch);
+                      successCount++;
+                  }
+               }
+          });
       }
 
       setPlaylists(playlists.map(p => p.id === targetPlaylist.id ? { ...p, songs: newSongs } : p));
@@ -530,8 +545,8 @@ export default function App() {
       onDownload: () => handleDownload(song),
       onPlayNext: () => handlePlayNext(song),
       isLiked: isLiked(song),
-      isOpenMenu: openMenuId === song.id,
-      setOpenMenu: (id: string | null) => setOpenMenuId(id),
+      isOpenMenu: menuSong?.id === song.id,
+      onOpenMenu: () => setMenuSong(song),
       onArtistClick: handleArtistClick
   });
 
@@ -711,7 +726,7 @@ export default function App() {
                                   <div className="text-xs text-gray-400 truncate">{song.artist}</div>
                               </div>
                               <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                                 <button onClick={() => setOpenMenuId(song.id)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
+                                 <button onClick={() => setMenuSong(song)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
                                      <MoreVerticalIcon size={18} />
                                  </button>
                               </div>
@@ -725,6 +740,7 @@ export default function App() {
   
   // New Artist Detail View
   const renderArtistDetail = () => {
+      // ... (Content identical to previous, keeping it for context)
       if (!activeArtist) return null;
       const isFollowedArtist = isFollowed(activeArtist.info.id);
 
@@ -757,7 +773,7 @@ export default function App() {
                               <div className="text-xs text-gray-400 truncate">{song.album}</div>
                           </div>
                           <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                             <button onClick={() => setOpenMenuId(song.id)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
+                             <button onClick={() => setMenuSong(song)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
                                  <MoreVerticalIcon size={18} />
                              </button>
                           </div>
@@ -814,7 +830,7 @@ export default function App() {
            )}
 
            {/* Search History */}
-           {!searchQuery && searchHistory.length > 0 && (
+           {!searchQuery && searchHistory.length > 0 && searchResults.length === 0 && (
                <div className="mb-8 animate-fade-in">
                    <div className="flex justify-between items-center mb-3 px-1">
                        <h3 className="text-sm font-bold text-gray-400">历史搜索</h3>
@@ -830,11 +846,18 @@ export default function App() {
                </div>
            )}
            
-           {searchLoading && <div className="flex justify-center py-10"><div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div></div>}
-           
-           {!searchLoading && filteredResults.length > 0 && (
+           {/* Results List */}
+           {filteredResults.length > 0 && (
                <div className="space-y-2">
                    {filteredResults.map(song => <SongItem key={song.id} {...songItemProps(song)} />)}
+               </div>
+           )}
+           
+           {/* Loading Spinner - Shown when searching (even if results exist) */}
+           {searchLoading && (
+               <div className="flex justify-center py-10">
+                   <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                   <span className="ml-3 text-sm text-gray-400 flex items-center">正在加载更多来源...</span>
                </div>
            )}
            
@@ -846,143 +869,138 @@ export default function App() {
   };
 
   const renderLabs = () => (
-      <div className="pb-24 animate-fade-in">
-          <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><LabIcon className="text-primary" size={28} /> 实验室</h2>
-          
-          {/* New Diagnostic Tool */}
-          <div className="bg-dark-light p-6 rounded-xl border border-white/5 mb-6">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-lg flex items-center gap-2"><ActivityIcon className="text-blue-400" /> 网络链路诊断</h3>
-                  <button onClick={runDiagnostics} disabled={isRunningDiagnostics} className="bg-primary hover:bg-indigo-600 px-4 py-2 rounded-lg text-xs font-bold transition-colors disabled:opacity-50">
-                      {isRunningDiagnostics ? '检测中...' : '开始全面检测'}
-                  </button>
-              </div>
-              <p className="text-xs text-gray-400 mb-4">测试所有音乐源的连通性。如果 YouTube 搜索失败，请查看下方结果。</p>
-              
-              {diagnosticResults.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2 mb-4">
-                      {diagnosticResults.map((res, i) => (
-                          <div key={i} className="flex justify-between items-center bg-black/20 p-3 rounded border border-white/5">
-                              <span className="text-sm">{res.name}</span>
-                              <div className="text-right">
-                                  <div className={`text-sm font-mono font-bold ${getStatusColor(res.status)}`}>{res.message}</div>
-                                  <div className="text-[10px] text-gray-500">{res.latency}ms</div>
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-              )}
-              
-              <div className="bg-black/40 rounded-lg p-3 h-40 overflow-y-auto font-mono text-[10px] text-green-400 custom-scrollbar border border-white/5">
-                  <div className="text-gray-500 mb-1 sticky top-0 bg-black/90 p-1 border-b border-white/10">运行日志 (实时更新)</div>
-                  {debugLogs.length === 0 ? <span className="text-gray-600">等待操作...</span> : debugLogs.map((log, i) => (
-                      <div key={i} className="whitespace-pre-wrap">{log}</div>
-                  ))}
-              </div>
-          </div>
+    <div className="pb-24 animate-fade-in">
+         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+             <LabIcon /> 实验室
+         </h2>
+         
+         {/* Diagnostics */}
+         <div className="bg-white/5 p-4 rounded-xl mb-6">
+             <div className="flex justify-between items-center mb-4">
+                 <h3 className="font-bold">网络诊断</h3>
+                 <button onClick={runDiagnostics} disabled={isRunningDiagnostics} className="bg-primary hover:bg-primary/80 px-3 py-1 rounded text-xs transition-colors">
+                     {isRunningDiagnostics ? '检测中...' : '开始检测'}
+                 </button>
+             </div>
+             <div className="space-y-2">
+                 {diagnosticResults.map((res, i) => (
+                     <div key={i} className="flex justify-between text-sm p-2 bg-black/20 rounded">
+                         <span>{res.name}</span>
+                         <div className="flex gap-4">
+                             <span className={getLatencyColor(res.latency)}>{res.latency > 0 ? `${res.latency}ms` : '-'}</span>
+                             <span className={getStatusColor(res.status)}>{res.status}</span>
+                         </div>
+                     </div>
+                 ))}
+                 {diagnosticResults.length === 0 && <p className="text-gray-500 text-xs">点击开始检测查看连接状态</p>}
+             </div>
+         </div>
 
-          <div className="bg-dark-light p-6 rounded-xl border border-white/5 mb-6">
-              <h3 className="font-bold text-lg mb-4 flex items-center gap-2"><PluginFileIcon className="text-green-400" /> 插件管理</h3>
-              <p className="text-sm text-gray-400 mb-4">支持导入 .js 插件文件或 .json 插件列表库。</p>
-              
-              {installedPlugins.length > 0 && (
-                  <div className="space-y-2 mb-6 max-h-40 overflow-y-auto custom-scrollbar">
-                      {installedPlugins.map(p => (
-                          <div key={p.id} className="flex justify-between items-center bg-white/5 p-3 rounded-lg">
-                              <div>
-                                  <div className="font-bold text-sm">{p.name}</div>
-                                  <div className="text-[10px] text-gray-500">{p.version} • {p.author}</div>
-                              </div>
-                              <div className="text-green-400 text-xs">● Active</div>
-                          </div>
-                      ))}
-                  </div>
-              )}
+         {/* Plugins */}
+         <div className="bg-white/5 p-4 rounded-xl mb-6">
+             <div className="flex justify-between items-center mb-4">
+                 <h3 className="font-bold">插件管理</h3>
+                 <input type="file" ref={fileInputRef} className="hidden" accept=".js,.json" onChange={handleFileChange} />
+                 <button onClick={handleImportPluginFileClick} className="bg-white/10 hover:bg-white/20 px-3 py-1 rounded text-xs flex items-center gap-2 transition-colors">
+                     <PluginFileIcon size={14} /> 导入插件
+                 </button>
+             </div>
+             {installedPlugins.length === 0 ? (
+                 <p className="text-gray-500 text-xs">暂无插件，支持导入 .js / .json 格式插件</p>
+             ) : (
+                 <div className="space-y-2">
+                     {installedPlugins.map(p => (
+                         <div key={p.id} className="flex justify-between items-center p-3 bg-black/20 rounded">
+                             <div>
+                                 <div className="font-bold text-sm">{p.name} <span className="text-xs text-gray-500">v{p.version}</span></div>
+                                 <div className="text-xs text-gray-400">{p.author}</div>
+                             </div>
+                             <span className="text-xs bg-green-900/50 text-green-400 px-2 py-0.5 rounded">已启用</span>
+                         </div>
+                     ))}
+                 </div>
+             )}
+             {pluginLoading && <div className="text-center text-xs text-gray-400 mt-2">正在处理...</div>}
+         </div>
 
-              <div className="flex gap-4">
-                  <input type="file" accept=".js,.json" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} />
-                  <button onClick={handleImportPluginFileClick} disabled={pluginLoading} className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg text-sm transition-colors border border-white/10 w-full flex items-center justify-center gap-2">
-                      {pluginLoading ? <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin"></div> : '导入插件 (.js / .json)'}
-                  </button>
-              </div>
-          </div>
-      </div>
+         {/* Debug Logs */}
+         <div className="bg-black/30 p-4 rounded-xl font-mono text-xs text-gray-400 h-48 overflow-y-auto border border-white/5">
+             <div className="flex justify-between mb-2 sticky top-0 bg-transparent">
+                 <span className="font-bold text-gray-300">系统日志</span>
+                 <button onClick={() => musicService.clearLogs()} className="text-red-400 hover:text-red-300">清空</button>
+             </div>
+             {debugLogs.length === 0 ? <p>暂无日志</p> : debugLogs.map((log, i) => (
+                 <div key={i} className="border-b border-white/5 py-1 whitespace-pre-wrap">{log}</div>
+             ))}
+         </div>
+    </div>
   );
 
   const renderSettings = () => (
-      <div className="pb-24 animate-fade-in">
-          <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><SettingsIcon className="text-gray-300" size={28} /> 设置</h2>
-          <div className="space-y-6">
-              <div className="bg-dark-light p-5 rounded-xl border border-white/5">
-                  <h3 className="font-bold text-white mb-4 flex items-center gap-2"><SmartphoneIcon className="text-blue-500 w-5 h-5" /> 后端服务 (解决 403)</h3>
-                  <div className="space-y-4">
-                      <div>
-                          <label className="block text-xs text-gray-400 mb-2">API 地址 (Node Server)</label>
-                          <div className="flex gap-2">
-                            <input 
-                                type="text" 
-                                placeholder="例如: http://192.168.1.100:3001/api" 
-                                value={settings.apiBaseUrl} 
-                                onChange={(e) => setSettings(s => ({ ...s, apiBaseUrl: e.target.value }))}
-                                className="bg-black/30 w-full p-3 rounded-lg border border-white/10 text-sm text-gray-300 focus:outline-none focus:border-blue-500"
-                            />
-                            <button onClick={handleSaveCustomUrl} className="bg-white/10 hover:bg-white/20 px-4 rounded-lg text-sm whitespace-nowrap">保存</button>
-                          </div>
-                          <p className="text-[10px] text-gray-500 mt-2">Bilibili 和 YouTube 播放需要后端支持以代理流量。</p>
-                      </div>
-                  </div>
-              </div>
+    <div className="pb-24 animate-fade-in">
+         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+             <SettingsIcon /> 设置
+         </h2>
 
-              <div className="bg-dark-light p-5 rounded-xl border border-white/5">
-                  <h3 className="font-bold text-white mb-4 flex items-center gap-2"><YouTubeIcon className="text-red-500 w-5 h-5" /> YouTube 自定义源 (备用)</h3>
-                  <div className="space-y-4">
-                      <div>
-                          <label className="block text-xs text-gray-400 mb-2">Invidious 镜像地址 (带 https://)</label>
-                          <div className="flex gap-2">
-                            <input 
-                                type="text" 
-                                placeholder="例如: https://invidious.jing.rocks" 
-                                value={settings.customInvidious} 
-                                onChange={(e) => setSettings(s => ({ ...s, customInvidious: e.target.value }))}
-                                className="bg-black/30 w-full p-3 rounded-lg border border-white/10 text-sm text-gray-300 focus:outline-none focus:border-red-500"
-                            />
-                            <button onClick={handleSaveCustomUrl} className="bg-white/10 hover:bg-white/20 px-4 rounded-lg text-sm whitespace-nowrap">保存</button>
-                          </div>
-                      </div>
-                  </div>
-              </div>
+         <div className="space-y-6">
+             <div className="bg-white/5 p-4 rounded-xl">
+                 <h3 className="font-bold mb-4 border-b border-white/10 pb-2">基础设置</h3>
+                 
+                 <div className="mb-4">
+                     <label className="block text-xs text-gray-400 mb-1">后端 API 地址 (NeteaseCloudMusicApi)</label>
+                     <input 
+                         type="text" 
+                         value={settings.apiBaseUrl} 
+                         onChange={(e) => setSettings({...settings, apiBaseUrl: e.target.value})}
+                         placeholder="http://localhost:3000 (可选)"
+                         className="w-full bg-black/20 border border-white/10 rounded p-2 text-sm focus:border-primary focus:outline-none"
+                     />
+                     <p className="text-[10px] text-gray-500 mt-1">用于解锁变灰歌曲或更稳定的搜索体验。</p>
+                 </div>
 
-               <div className="bg-dark-light p-5 rounded-xl border border-white/5">
-                  <h3 className="font-bold text-white mb-4 flex items-center gap-2"><ActivityIcon className="text-blue-400 w-5 h-5" /> 网络设置</h3>
-                  <div className="space-y-4">
-                      <div>
-                          <label className="block text-xs text-gray-400 mb-2">搜索超时时间 (秒)</label>
-                          <input 
-                              type="number" 
-                              min="3"
-                              max="60"
-                              value={settings.searchTimeout} 
-                              onChange={(e) => setSettings(s => ({ ...s, searchTimeout: parseInt(e.target.value) || 15 }))}
-                              className="bg-black/30 w-full p-3 rounded-lg border border-white/10 text-sm text-gray-300 focus:outline-none focus:border-blue-500"
-                          />
-                          <p className="text-[10px] text-gray-500 mt-2">如果搜索 B站/YouTube 经常失败，请尝试调大此数值。</p>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      </div>
+                 <div className="mb-4">
+                     <label className="block text-xs text-gray-400 mb-1">Invidious 实例 (YouTube Mirror)</label>
+                     <input 
+                         type="text" 
+                         value={settings.customInvidious} 
+                         onChange={(e) => setSettings({...settings, customInvidious: e.target.value})}
+                         placeholder="https://inv.tux.pizza"
+                         className="w-full bg-black/20 border border-white/10 rounded p-2 text-sm focus:border-primary focus:outline-none"
+                     />
+                 </div>
+
+                 <div className="mb-4">
+                     <label className="block text-xs text-gray-400 mb-1">搜索超时 (秒)</label>
+                     <input 
+                         type="number" 
+                         value={settings.searchTimeout} 
+                         onChange={(e) => setSettings({...settings, searchTimeout: parseInt(e.target.value) || 10})}
+                         className="w-full bg-black/20 border border-white/10 rounded p-2 text-sm focus:border-primary focus:outline-none"
+                     />
+                 </div>
+
+                 <button onClick={handleSaveCustomUrl} className="bg-primary hover:bg-primary/80 transition-colors px-4 py-2 rounded-lg text-sm font-bold w-full shadow-lg shadow-primary/20">
+                     保存设置
+                 </button>
+             </div>
+
+             <div className="bg-white/5 p-4 rounded-xl">
+                 <h3 className="font-bold mb-4 border-b border-white/10 pb-2">关于</h3>
+                 <div className="text-sm text-gray-400 space-y-2">
+                     <p className="flex items-center gap-2"><SmartphoneIcon size={16}/> UniStream Music Player v2.4</p>
+                     <p>基于 React + Capacitor + Gemini API (Simulated) 构建</p>
+                     <p className="pt-2 text-xs opacity-60">本项目仅供学习交流，请支持正版音乐。</p>
+                 </div>
+             </div>
+         </div>
+    </div>
   );
-  
-  // Find song details for menu
-  const menuSong = openMenuId 
-      ? (activePlaylist?.songs.find(s => s.id === openMenuId) || searchResults.find(s => s.id === openMenuId) || playHistory.find(s => s.id === openMenuId) || activeArtist?.songs.find(s => s.id === openMenuId) || queue.find(s => s.id === openMenuId))
-      : null;
 
   return (
     <div className="min-h-screen bg-dark text-white flex flex-col md:flex-row">
       <Toast message={toast.msg} type={toast.type} isVisible={toast.show} onClose={() => setToast(t => ({...t, show: false}))} />
       
-      {/* Mobile & Desktop Nav layout remains same */}
+      {/* Sidebar */}
       <div className="hidden md:flex flex-col w-64 border-r border-white/5 p-6 bg-dark">
         <div className="flex items-center gap-2 mb-10 text-xl font-bold tracking-tight">
             <div className="w-8 h-8 bg-gradient-to-br from-primary to-purple-600 rounded-lg flex items-center justify-center"><span className="text-white text-xs">U</span></div>
@@ -1018,11 +1036,12 @@ export default function App() {
               onDownload={() => handleDownload(menuSong)}
               onPlayNext={() => handlePlayNext(menuSong)}
               isOpen={!!menuSong}
-              setOpen={() => setOpenMenuId(null)}
+              setOpen={() => setMenuSong(null)}
               onArtistClick={handleArtistClick}
           />
       )}
 
+      {/* Mobile Nav */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-dark-light/90 backdrop-blur-lg border-t border-white/5 flex justify-around items-center py-3 pb-safe z-50">
           <MobileNavBtn icon={<HomeIcon />} label="首页" active={view === 'HOME'} onClick={() => setView('HOME')} />
           <MobileNavBtn icon={<SearchIcon />} label="搜索" active={view === 'SEARCH'} onClick={() => setView('SEARCH')} />
@@ -1051,7 +1070,7 @@ export default function App() {
   );
 }
 
-// ... NavBtn, MobileNavBtn, SongItem components
+// ... (Subcomponents identical)
 const NavBtn = ({ icon, label, active, onClick }: any) => (
   <button onClick={onClick} className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${active ? 'bg-white/10 text-white font-medium' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}>
     {React.cloneElement(icon, { size: 20 })}
@@ -1075,11 +1094,11 @@ interface SongItemProps {
   onPlayNext: () => void;
   isLiked: boolean;
   isOpenMenu: boolean;
-  setOpenMenu: (id: string | null) => void;
+  onOpenMenu: () => void;
   onArtistClick: (id: string) => void;
 }
 
-const SongItem: React.FC<SongItemProps> = ({ song, onClick, isCurrent, setOpenMenu, onArtistClick }) => (
+const SongItem: React.FC<SongItemProps> = ({ song, onClick, isCurrent, onOpenMenu, onArtistClick }) => (
   <div onClick={onClick} className={`group flex items-center p-3 rounded-xl cursor-pointer transition-colors ${isCurrent ? 'bg-white/10' : 'hover:bg-white/5'}`}>
     <div className="relative w-12 h-12 rounded-lg overflow-hidden mr-4 flex-shrink-0">
       <img src={song.coverUrl} alt={song.title} className={`w-full h-full object-cover ${song.isGray ? 'grayscale opacity-50' : ''}`} />
@@ -1108,22 +1127,18 @@ const SongItem: React.FC<SongItemProps> = ({ song, onClick, isCurrent, setOpenMe
       </p>
     </div>
     <div className="flex items-center gap-2 ml-2" onClick={e => e.stopPropagation()}>
-         <button onClick={() => setOpenMenu(song.id)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
+         <button onClick={() => onOpenMenu()} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-white/10">
              <MoreVerticalIcon size={18} />
          </button>
     </div>
   </div>
 );
 
-// Updated: Bottom Sheet Style Menu
 const SongItemMenu = ({ song, isLiked, onToggleLike, onDownload, onPlayNext, isOpen, setOpen, onArtistClick }: any) => {
     if (!isOpen) return null;
     return (
         <div className="fixed inset-0 z-[100] flex justify-center items-end md:items-center animate-fade-in">
-            {/* Backdrop */}
             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)}></div>
-            
-            {/* Menu Content - Bottom Sheet on Mobile, Centered Modal on Desktop */}
             <div className="bg-dark-light w-full md:w-80 rounded-t-2xl md:rounded-2xl border border-white/10 shadow-2xl z-10 p-4 pb-safe animate-slide-up transform transition-transform">
                 <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/5">
                     <img src={song.coverUrl} className="w-12 h-12 rounded-lg bg-gray-800 object-cover" />
@@ -1132,7 +1147,6 @@ const SongItemMenu = ({ song, isLiked, onToggleLike, onDownload, onPlayNext, isO
                         <p className="text-xs text-gray-400 truncate">{song.artist}</p>
                     </div>
                 </div>
-
                 <div className="space-y-1">
                     <button onClick={() => { onPlayNext(); setOpen(false); }} className="w-full text-left px-4 py-3 text-sm hover:bg-white/5 rounded-lg flex items-center gap-3 text-white transition-colors">
                         <NextPlanIcon size={18} /> 下一首播放
@@ -1149,7 +1163,6 @@ const SongItemMenu = ({ song, isLiked, onToggleLike, onDownload, onPlayNext, isO
                         </button>
                     )}
                 </div>
-                
                 <button onClick={() => setOpen(false)} className="w-full mt-4 py-3 text-center text-gray-500 hover:text-white border-t border-white/5 md:hidden">
                     关闭
                 </button>
